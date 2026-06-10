@@ -162,6 +162,18 @@ def check_nhtsa(state, now_utc):
     df["MAKETXT"] = df["MAKETXT"].str.upper().str.strip()
     df = df[df["MAKETXT"].isin(MAJOR_MAKES)]
 
+    # Write full CSV (2020-present, all vehicle rows, newest first)
+    csv_df = df[df["RCDATE"].fillna("") >= "20200101"].copy()
+    csv_df = csv_df.sort_values("RCDATE", ascending=False)
+    csv_cols = [
+        "CAMPNO", "MAKETXT", "MODELTXT", "YEARTXT", "COMPNAME",
+        "RCDATE", "ODATE", "POTAFF", "INFLUENCED_BY",
+        "DESC_DEFECT", "CONEQUENCE_DEFECT", "CORRECTIVE_ACTION",
+        "DO_NOT_DRIVE", "PARK_OUTSIDE",
+    ]
+    csv_df[csv_cols].to_csv("recalls_2020_present.csv", index=False)
+    print(f"  CSV written: {len(csv_df):,} rows (2020-present, major OEMs)")
+
     cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
     df = df[df["RCDATE"].fillna("") >= cutoff]
     df = df.drop_duplicates(subset=["CAMPNO"])
@@ -271,7 +283,11 @@ def build_email(recalls):
   </tr>
   {''.join(rows)}
 </table>
-<p style="font-size:11px;color:#bbb;margin-top:24px">
+<p style="font-size:12px;color:#888;margin-top:24px">
+  <a href="https://github.com/grantschwab/recall-tool/blob/master/recalls_2020_present.csv">&#128202; Browse all recalls (2020–present)</a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <a href="https://raw.githubusercontent.com/grantschwab/recall-tool/master/recalls_2020_present.csv">&#11015; Download CSV</a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
   <a href="https://www.nhtsa.gov/recalls">NHTSA Recalls Database</a>
 </p>
 </body></html>"""

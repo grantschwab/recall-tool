@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   monitor:
@@ -40,3 +40,16 @@ jobs:
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           NOTIFY_EMAILS: ${{ secrets.NOTIFY_EMAILS }}
         run: python recall_monitor.py
+
+      - name: Commit CSV if updated
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add recalls_2020_present.csv 2>/dev/null || true
+          git diff --staged --quiet && echo "CSV unchanged, nothing to commit." && exit 0
+          git commit -m "update: recalls CSV [skip ci]"
+          for i in 1 2 3; do
+            git fetch origin master
+            git rebase origin/master && git push origin HEAD:master && break
+            echo "Retry $i..." && sleep $((i * 3))
+          done
