@@ -165,18 +165,30 @@ def check_nhtsa(state, now_utc, force=False):
     df["MAKETXT"] = df["MAKETXT"].str.upper().str.strip()
     df = df[df["MAKETXT"].isin(MAJOR_MAKES)]
 
-    # Write full CSV (2020-present, all vehicle rows, newest first)
+    # Write CSV: one row per campaign (2020-present), newest first.
+    # Multiple models/years per campaign are joined as comma-separated values.
+    # Text columns excluded; full details one click away via NHTSA_URL.
     csv_df = df[df["RCDATE"].fillna("") >= "20200101"].copy()
-    csv_df = csv_df.sort_values("RCDATE", ascending=False)
-    # Long text fields (DESC_DEFECT etc.) are excluded to keep file under GitHub limits.
-    # Full details are always one click away via the CAMPNO link to NHTSA.
-    csv_cols = [
-        "CAMPNO", "MAKETXT", "MODELTXT", "YEARTXT", "COMPNAME",
-        "RCDATE", "ODATE", "POTAFF", "INFLUENCED_BY",
-        "DO_NOT_DRIVE", "PARK_OUTSIDE",
+    agg = csv_df.groupby("CAMPNO").agg(
+        MAKES=("MAKETXT", lambda x: ", ".join(sorted(set(x)))),
+        MODELS=("MODELTXT", lambda x: ", ".join(sorted(set(x.dropna())))),
+        YEARS=("YEARTXT", lambda x: ", ".join(sorted(set(x.dropna())))),
+        COMPNAME=("COMPNAME", "first"),
+        RCDATE=("RCDATE", "first"),
+        ODATE=("ODATE", "first"),
+        POTAFF=("POTAFF", "first"),
+        INFLUENCED_BY=("INFLUENCED_BY", "first"),
+        DO_NOT_DRIVE=("DO_NOT_DRIVE", "first"),
+        PARK_OUTSIDE=("PARK_OUTSIDE", "first"),
+    ).reset_index()
+    agg["NHTSA_URL"] = "https://www.nhtsa.gov/vehicle/recalls#?nhtsaId=" + agg["CAMPNO"]
+    agg = agg.sort_values("RCDATE", ascending=False)
+    col_order = [
+        "CAMPNO", "NHTSA_URL", "MAKES", "MODELS", "YEARS", "COMPNAME",
+        "RCDATE", "ODATE", "POTAFF", "INFLUENCED_BY", "DO_NOT_DRIVE", "PARK_OUTSIDE",
     ]
-    csv_df[csv_cols].to_csv("recalls_2020_present.csv", index=False)
-    print(f"  CSV written: {len(csv_df):,} rows (2020-present, major OEMs)")
+    agg[col_order].to_csv("recalls_2020_present.csv", index=False)
+    print(f"  CSV written: {len(agg):,} campaigns (2020-present, major OEMs)")
 
     cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
     df = df[df["RCDATE"].fillna("") >= cutoff]
