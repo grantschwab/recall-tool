@@ -2,15 +2,15 @@ name: Recall Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes; GitHub may add up to ~30 min delay at peak
-  workflow_dispatch:        # allow manual "Run workflow" from Actions tab
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 concurrency:
   group: recall-monitor
-  cancel-in-progress: false  # don't drop a run mid-commit; queue instead
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   monitor:
@@ -18,30 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: seen_items.json
+          key: recall-state-${{ github.run_id }}
+          restore-keys: recall-state-
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install requests pandas
 
-      - name: Check feeds
+      - name: Check NHTSA
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           NOTIFY_EMAILS: ${{ secrets.NOTIFY_EMAILS }}
         run: python recall_monitor.py
-
-      - name: Commit updated state
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add seen_items.json
-          git diff --staged --quiet && echo "No state changes." && exit 0
-          git commit -m "chore: update seen items [skip ci]"
-          for i in 1 2 3; do
-            git fetch origin master
-            git rebase origin/master && git push origin HEAD:master && break
-            echo "Retry $i..."
-            sleep $((i * 3))
-          done
