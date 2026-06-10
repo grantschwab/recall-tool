@@ -124,7 +124,7 @@ def print_timing_summary():
 # NHTSA flat file
 # ---------------------------------------------------------------------------
 
-def check_nhtsa(state, now_utc):
+def check_nhtsa(state, now_utc, force=False):
     seen_campnos = set(state.get("seen_campnos", []))
     last_etag = state.get("nhtsa_etag", "")
 
@@ -136,7 +136,7 @@ def check_nhtsa(state, now_utc):
 
     etag_changed = current_etag != last_etag
 
-    if not etag_changed:
+    if not etag_changed and not force:
         print("  Flat file unchanged. Skipping download.")
         append_log({
             "event": "file_check",
@@ -146,6 +146,9 @@ def check_nhtsa(state, now_utc):
             "new_recalls_found": 0,
         })
         return [], seen_campnos, current_etag
+
+    if force and not etag_changed:
+        print("  FORCE mode: downloading despite unchanged ETag.")
 
     print("  Flat file updated — downloading (14MB)...")
     resp = requests.get(NHTSA_ZIP_URL, timeout=180)
@@ -178,7 +181,11 @@ def check_nhtsa(state, now_utc):
     df = df[df["RCDATE"].fillna("") >= cutoff]
     df = df.drop_duplicates(subset=["CAMPNO"])
 
-    new_recalls = df[~df["CAMPNO"].isin(seen_campnos)].to_dict("records")
+    if force:
+        # In force mode treat all recent recalls as new (don't filter by seen)
+        new_recalls = df.to_dict("records")
+    else:
+        new_recalls = df[~df["CAMPNO"].isin(seen_campnos)].to_dict("records")
     seen_campnos.update(df["CAMPNO"].tolist())
 
     # Log this file update
@@ -316,8 +323,12 @@ def main():
     now_utc = datetime.now(timezone.utc).isoformat()
     state = load_state()
 
+    force = os.environ.get("FORCE_EMAIL", "").lower() == "true"
+    if force:
+        print("*** FORCE MODE — will email regardless of ETag or seen state ***")
+
     print(f"[{now_utc[:19]}Z] Checking NHTSA flat file...")
-    new_recalls, seen_campnos, new_etag = check_nhtsa(state, now_utc)
+    new_recalls, seen_campnos, new_etag = check_nhtsa(state, now_utc, force=force)
     print(f"New NHTSA filings: {len(new_recalls)}")
 
     if new_recalls:
