@@ -168,10 +168,11 @@ def check_nhtsa(state, now_utc, force=False):
     # Write full CSV (2020-present, all vehicle rows, newest first)
     csv_df = df[df["RCDATE"].fillna("") >= "20200101"].copy()
     csv_df = csv_df.sort_values("RCDATE", ascending=False)
+    # Long text fields (DESC_DEFECT etc.) are excluded to keep file under GitHub limits.
+    # Full details are always one click away via the CAMPNO link to NHTSA.
     csv_cols = [
         "CAMPNO", "MAKETXT", "MODELTXT", "YEARTXT", "COMPNAME",
         "RCDATE", "ODATE", "POTAFF", "INFLUENCED_BY",
-        "DESC_DEFECT", "CONEQUENCE_DEFECT", "CORRECTIVE_ACTION",
         "DO_NOT_DRIVE", "PARK_OUTSIDE",
     ]
     csv_df[csv_cols].to_csv("recalls_2020_present.csv", index=False)
