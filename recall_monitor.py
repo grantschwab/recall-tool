@@ -7,23 +7,27 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import feedparser
 
-# NHTSA official recall feed
-NHTSA_FEED = "https://www.nhtsa.gov/rss/recalls"
+# NHTSA official recalls — try Drupal RSS first, fall back to Google News
+NHTSA_FEEDS = [
+    "https://www.nhtsa.gov/about-nhtsa/briefing-room?_format=rss",
+    "https://news.google.com/rss/search?q=site%3Anhtsa.gov+recall&hl=en-US&gl=US&ceid=US:en",
+]
 
-# OEM newsroom feeds — items are filtered for recall keywords
+# OEM newsrooms via Google News RSS — reliable, includes official press releases.
+# Each query is scoped to the brand + "recall" so all results are relevant.
 OEM_FEEDS = {
-    "Ford":       "https://media.ford.com/content/fordmedia/fna/us/en.rss.html",
-    "GM":         "https://media.gm.com/rss/media-gm.rss",
-    "Stellantis": "https://media.stellantis.com/en-us/feed",
-    "Toyota":     "https://pressroom.toyota.com/category/pressreleases/feed/",
-    "Honda":      "https://hondanews.com/en-US/releases/feed",
-    "Hyundai":    "https://www.hyundainewsusa.com/feed/",
-    "Kia":        "https://www.kiamedia.com/us/en/feed",
-    "BMW":        "https://www.press.bmwgroup.com/usa/feed",
-    "Mercedes":   "https://media.mercedes-benz.com/us/feed",
-    "VW":         "https://media.vw.com/en-us/feed",
-    "Tesla":      "https://www.tesla.com/blog/feed",
-    "Rivian":     "https://rivian.com/newsroom/feed",
+    "Ford":       "https://news.google.com/rss/search?q=ford+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "GM":         "https://news.google.com/rss/search?q=general+motors+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Stellantis": "https://news.google.com/rss/search?q=stellantis+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Toyota":     "https://news.google.com/rss/search?q=toyota+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Honda":      "https://news.google.com/rss/search?q=honda+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Hyundai":    "https://news.google.com/rss/search?q=hyundai+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Kia":        "https://news.google.com/rss/search?q=kia+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "BMW":        "https://news.google.com/rss/search?q=bmw+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Mercedes":   "https://news.google.com/rss/search?q=mercedes-benz+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "VW":         "https://news.google.com/rss/search?q=volkswagen+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Tesla":      "https://news.google.com/rss/search?q=tesla+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
+    "Rivian":     "https://news.google.com/rss/search?q=rivian+vehicle+recall&hl=en-US&gl=US&ceid=US:en",
 }
 
 RECALL_KEYWORDS = {"recall", "safety", "defect", "remedy", "nhtsa", "campaign", "reimbursement"}
@@ -60,7 +64,7 @@ def check_feed(url, label, seen, require_keyword=False):
         feed = feedparser.parse(url, request_headers={"User-Agent": "recall-monitor/1.0"})
         if feed.bozo and not feed.entries:
             print(f"[WARN] {label}: feed error — {feed.bozo_exception}")
-            return []
+            return None  # None = feed failed; [] = feed ok but nothing new
         for entry in feed.entries:
             eid = item_id(entry)
             if eid in seen:
@@ -77,6 +81,7 @@ def check_feed(url, label, seen, require_keyword=False):
             })
     except Exception as e:
         print(f"[WARN] {label}: {e}")
+        return None
     return new_items
 
 
@@ -131,11 +136,17 @@ def main():
     all_new = []
 
     print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Checking NHTSA feed...")
-    all_new += check_feed(NHTSA_FEED, "NHTSA", seen, require_keyword=False)
+    for nhtsa_url in NHTSA_FEEDS:
+        results = check_feed(nhtsa_url, "NHTSA", seen, require_keyword=False)
+        if results is not None:  # check_feed returns [] on warn, only None on hard failure
+            all_new += results
+            break
 
     for label, url in OEM_FEEDS.items():
         print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Checking {label} newsroom...")
-        all_new += check_feed(url, f"{label} Newsroom", seen, require_keyword=True)
+        results = check_feed(url, f"{label} Newsroom", seen, require_keyword=True)
+        if results:
+            all_new += results
 
     print(f"New items found: {len(all_new)}")
 
