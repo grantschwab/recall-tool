@@ -7,11 +7,8 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import feedparser
 
-# NHTSA official recalls — try Drupal RSS first, fall back to Google News
-NHTSA_FEEDS = [
-    "https://www.nhtsa.gov/about-nhtsa/briefing-room?_format=rss",
-    "https://news.google.com/rss/search?q=site%3Anhtsa.gov+recall&hl=en-US&gl=US&ceid=US:en",
-]
+# NHTSA official recalls via Google News (scoped to nhtsa.gov, returns actual NHTSA filings)
+NHTSA_FEED = "https://news.google.com/rss/search?q=site%3Anhtsa.gov+recall&hl=en-US&gl=US&ceid=US:en"
 
 # OEM newsrooms via Google News RSS — reliable, includes official press releases.
 # Each query is scoped to the brand + "recall" so all results are relevant.
@@ -136,11 +133,9 @@ def main():
     all_new = []
 
     print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Checking NHTSA feed...")
-    for nhtsa_url in NHTSA_FEEDS:
-        results = check_feed(nhtsa_url, "NHTSA", seen, require_keyword=False)
-        if results is not None:  # check_feed returns [] on warn, only None on hard failure
-            all_new += results
-            break
+    results = check_feed(NHTSA_FEED, "NHTSA", seen, require_keyword=False)
+    if results:
+        all_new += results
 
     for label, url in OEM_FEEDS.items():
         print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Checking {label} newsroom...")
