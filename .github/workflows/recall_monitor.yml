@@ -38,4 +38,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git add seen_items.json
           git diff --staged --quiet || git commit -m "chore: update seen items [skip ci]"
-          git push
+          git pull --rebase origin master && git push
