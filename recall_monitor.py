@@ -5,7 +5,7 @@ import zipfile
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
 
@@ -36,7 +36,12 @@ COLUMNS = [
 ]
 
 STATE_FILE = "seen_items.json"
+TIMING_LOG = "nhtsa_timing_log.jsonl"
 
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
 
 def load_state():
     try:
@@ -52,18 +57,97 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-def check_nhtsa(state):
+# ---------------------------------------------------------------------------
+# Timing log
+# ---------------------------------------------------------------------------
+
+def append_log(entry):
+    with open(TIMING_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def load_log():
+    entries = []
+    try:
+        with open(TIMING_LOG) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    entries.append(json.loads(line))
+    except FileNotFoundError:
+        pass
+    return entries
+
+
+def print_timing_summary():
+    entries = load_log()
+    if not entries:
+        return
+
+    checks = [e for e in entries if e.get("event") == "file_check"]
+    detections = [e for e in entries if e.get("event") == "recall_detected"]
+
+    print("\n--- NHTSA Timing Summary ---")
+    print(f"Total file checks logged: {len(checks)}")
+
+    if len(checks) >= 2:
+        # Compute average hours between flat file updates
+        update_events = [c for c in checks if c.get("etag_changed")]
+        print(f"File updates observed: {len(update_events)}")
+        if len(update_events) >= 2:
+            times = sorted(
+                datetime.fromisoformat(e["ts"]) for e in update_events
+            )
+            gaps = [(times[i+1] - times[i]).total_seconds() / 3600
+                    for i in range(len(times) - 1)]
+            avg_gap = sum(gaps) / len(gaps)
+            print(f"Avg hours between NHTSA updates: {avg_gap:.1f}h")
+
+    if detections:
+        print(f"\nRecalls detected: {len(detections)}")
+        print(f"{'Campaign':<14} {'Make':<12} {'Filed':<12} {'Detected':<22} {'Lag (hrs)'}")
+        print("-" * 75)
+        for d in sorted(detections, key=lambda x: x["detected_at"], reverse=True)[:20]:
+            lag = d.get("lag_hours", "?")
+            lag_str = f"{lag:.1f}" if isinstance(lag, float) else str(lag)
+            print(
+                f"{d.get('campno',''):<14} "
+                f"{d.get('make',''):<12} "
+                f"{d.get('rcdate',''):<12} "
+                f"{d.get('detected_at','')[:19]:<22} "
+                f"{lag_str}"
+            )
+    print("--- End Summary ---\n")
+
+
+# ---------------------------------------------------------------------------
+# NHTSA flat file
+# ---------------------------------------------------------------------------
+
+def check_nhtsa(state, now_utc):
     seen_campnos = set(state.get("seen_campnos", []))
     last_etag = state.get("nhtsa_etag", "")
 
     head = requests.head(NHTSA_ZIP_URL, timeout=30)
     current_etag = head.headers.get("etag", "")
+    last_modified = head.headers.get("last-modified", "")
+    print(f"  ETag      : {current_etag}")
+    print(f"  Last-Modified: {last_modified}")
 
-    if current_etag and current_etag == last_etag:
-        print("NHTSA flat file unchanged (ETag match). Skipping download.")
-        return [], seen_campnos, last_etag
+    etag_changed = current_etag != last_etag
 
-    print("NHTSA flat file updated. Downloading (14MB)...")
+    if not etag_changed:
+        print("  Flat file unchanged. Skipping download.")
+        append_log({
+            "event": "file_check",
+            "ts": now_utc,
+            "last_modified": last_modified,
+            "etag_changed": False,
+            "new_recalls_found": 0,
+        })
+        return [], seen_campnos, current_etag
+
+    print("  Flat file updated — downloading (14MB)...")
     resp = requests.get(NHTSA_ZIP_URL, timeout=180)
     resp.raise_for_status()
 
@@ -85,8 +169,49 @@ def check_nhtsa(state):
     new_recalls = df[~df["CAMPNO"].isin(seen_campnos)].to_dict("records")
     seen_campnos.update(df["CAMPNO"].tolist())
 
+    # Log this file update
+    append_log({
+        "event": "file_check",
+        "ts": now_utc,
+        "last_modified": last_modified,
+        "etag_changed": True,
+        "new_recalls_found": len(new_recalls),
+    })
+
+    # Log each new recall with filing-to-detection lag
+    for r in new_recalls:
+        rcdate_str = str(r.get("RCDATE", "")).strip()
+        lag_hours = None
+        try:
+            rcdate_dt = datetime.strptime(rcdate_str, "%Y%m%d").replace(
+                tzinfo=timezone.utc
+            )
+            now_dt = datetime.fromisoformat(now_utc)
+            lag_hours = round((now_dt - rcdate_dt).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+
+        append_log({
+            "event": "recall_detected",
+            "ts": now_utc,
+            "campno": r.get("CAMPNO", ""),
+            "make": r.get("MAKETXT", ""),
+            "model": r.get("MODELTXT", ""),
+            "year": r.get("YEARTXT", ""),
+            "rcdate": rcdate_str,
+            "odate": r.get("ODATE", ""),
+            "potaff": r.get("POTAFF", ""),
+            "detected_at": now_utc,
+            "flat_file_modified": last_modified,
+            "lag_hours": lag_hours,
+        })
+
     return new_recalls, seen_campnos, current_etag
 
+
+# ---------------------------------------------------------------------------
+# Email
+# ---------------------------------------------------------------------------
 
 def fmt_potaff(val):
     try:
@@ -167,11 +292,16 @@ def send_email(html, count):
     print(f"Email sent to: {', '.join(recipients)}")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
+    now_utc = datetime.now(timezone.utc).isoformat()
     state = load_state()
 
-    print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] Checking NHTSA flat file...")
-    new_recalls, seen_campnos, new_etag = check_nhtsa(state)
+    print(f"[{now_utc[:19]}Z] Checking NHTSA flat file...")
+    new_recalls, seen_campnos, new_etag = check_nhtsa(state, now_utc)
     print(f"New NHTSA filings: {len(new_recalls)}")
 
     if new_recalls:
@@ -183,6 +313,8 @@ def main():
     state["nhtsa_etag"] = new_etag
     state["seen_campnos"] = sorted(seen_campnos)
     save_state(state)
+
+    print_timing_summary()
 
 
 if __name__ == "__main__":

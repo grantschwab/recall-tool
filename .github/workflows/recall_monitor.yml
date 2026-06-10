@@ -21,7 +21,9 @@ jobs:
       - name: Restore state
         uses: actions/cache@v4
         with:
-          path: seen_items.json
+          path: |
+            seen_items.json
+            nhtsa_timing_log.jsonl
           key: recall-state-${{ github.run_id }}
           restore-keys: recall-state-
 
