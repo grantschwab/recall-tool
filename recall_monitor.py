@@ -259,7 +259,7 @@ def fmt_date(val):
         return val or ""
 
 
-def build_email(recalls):
+def build_email(recalls, force=False):
     rows = []
     for r in recalls:
         campno = r.get("CAMPNO", "")
@@ -290,9 +290,15 @@ def build_email(recalls):
 </tr>""")
 
     n = len(recalls)
+    banner = ""
+    if force:
+        banner = """<p style="background:#fff3cd;color:#856404;padding:8px 12px;border-radius:4px;margin:0 0 12px 0">
+&#9888; This is a manually triggered test run, not a live recall alert.
+</p>"""
     return f"""<html><body style="font-family:sans-serif;font-size:14px;max-width:960px;margin:0 auto">
 <h2 style="color:#c0392b;margin-bottom:4px">&#9888; NHTSA Recall Alert &mdash; {n} new filing{'s' if n != 1 else ''}</h2>
 <p style="color:#888;margin-top:0">{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
+{banner}
 <table border="0" cellpadding="0" cellspacing="0"
   style="border-collapse:collapse;width:100%;border:1px solid #ddd;font-size:13px">
   <tr style="background:#f2f2f2;font-size:11px;text-transform:uppercase">
@@ -313,12 +319,13 @@ def build_email(recalls):
 </body></html>"""
 
 
-def send_email(html, count):
+def send_email(html, count, force=False):
     user = os.environ["GMAIL_USER"]
     pwd = os.environ["GMAIL_APP_PASS"]
     recipients = [e.strip() for e in os.environ["NOTIFY_EMAILS"].split(",")]
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[Recall Alert] {count} new NHTSA filing{'s' if count != 1 else ''}"
+    prefix = "[TEST] " if force else ""
+    msg["Subject"] = f"{prefix}[Recall Alert] {count} new NHTSA filing{'s' if count != 1 else ''}"
     msg["From"] = user
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText(html, "html"))
@@ -345,8 +352,8 @@ def main():
     print(f"New NHTSA filings: {len(new_recalls)}")
 
     if new_recalls:
-        html = build_email(new_recalls)
-        send_email(html, len(new_recalls))
+        html = build_email(new_recalls, force=force)
+        send_email(html, len(new_recalls), force=force)
     else:
         print("Nothing to send.")
 
