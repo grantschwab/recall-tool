@@ -56,6 +56,7 @@ jobs:
           git commit -m "update: recalls CSV [skip ci]"
           for i in 1 2 3; do
             git fetch origin master
-            git rebase origin/master && git push origin HEAD:master && break
+            git rebase origin/master && git push origin HEAD:master && exit 0
             echo "Retry $i..." && sleep $((i * 3))
           done
+          echo "::error::Failed to push CSV update after 3 retries" && exit 1

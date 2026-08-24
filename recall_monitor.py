@@ -5,7 +5,7 @@ import zipfile
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import requests
 import pandas as pd
 
@@ -190,8 +190,11 @@ def check_nhtsa(state, now_utc, force=False):
     agg[col_order].to_csv("recalls_2020_present.csv", index=False)
     print(f"  CSV written: {len(agg):,} campaigns (2020-present, major OEMs)")
 
-    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-    df = df[df["RCDATE"].fillna("") >= cutoff]
+    # No recency cutoff here: NHTSA sometimes doesn't publish a campaign to the
+    # flat file until well over a week after its filing date, and gating
+    # "new" detection on a rolling window would let those slip through
+    # unnoticed forever. seen_campnos alone is what prevents re-notification.
+    df = df[df["RCDATE"].fillna("") >= "20200101"]
     df = df.drop_duplicates(subset=["CAMPNO"])
 
     if force:
