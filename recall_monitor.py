@@ -198,8 +198,10 @@ def check_nhtsa(state, now_utc, force=False):
     df = df.drop_duplicates(subset=["CAMPNO"])
 
     if force:
-        # In force mode treat all recent recalls as new (don't filter by seen)
-        new_recalls = df.to_dict("records")
+        # Test mode: send a small sample of the most recent campaigns as a
+        # test email, regardless of seen state. Not the full 2020-present set
+        # now that detection isn't windowed to the last 7 days.
+        new_recalls = df.sort_values("RCDATE", ascending=False).head(5).to_dict("records")
     else:
         new_recalls = df[~df["CAMPNO"].isin(seen_campnos)].to_dict("records")
     seen_campnos.update(df["CAMPNO"].tolist())
