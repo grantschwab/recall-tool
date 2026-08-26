@@ -331,12 +331,17 @@ def check_investigations(state, now_utc, force=False):
     agg[col_order].to_csv("investigations_2020_present.csv", index=False)
     print(f"  [INV] CSV written: {len(agg):,} investigations (2020-present, major OEMs)")
 
-    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-    df = df[df["ODATE"].fillna("") >= cutoff]
+    # No recency cutoff here: same reasoning as check_nhtsa — NHTSA can take
+    # over a week to publish to the flat file, and a rolling window would
+    # permanently drop investigations that miss it. seen_actions alone
+    # prevents re-notification.
+    df = df[df["ODATE"].fillna("") >= "20200101"]
     df = df.drop_duplicates(subset=["NHTSA_ACTION_NUMBER"])
 
     if force:
-        new_investigations = df.to_dict("records")
+        # Test mode: small sample of the most recent investigations, not the
+        # full 2020-present set.
+        new_investigations = df.sort_values("ODATE", ascending=False).head(5).to_dict("records")
     else:
         new_investigations = df[
             ~df["NHTSA_ACTION_NUMBER"].isin(seen_actions)
