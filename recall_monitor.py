@@ -10,6 +10,7 @@ import requests
 import pandas as pd
 
 NHTSA_ZIP_URL = "https://static.nhtsa.gov/odi/ffdd/rcl/FLAT_RCL_POST_2010.zip"
+NHTSA_INV_ZIP_URL = "https://static.nhtsa.gov/odi/ffdd/inv/FLAT_INV.zip"
 
 MAJOR_MAKES = {
     "FORD", "LINCOLN",
@@ -34,6 +35,20 @@ COLUMNS = [
     "MFR_COMP_NAME", "MFR_COMP_DESC", "MFR_COMP_PTNO",
     "DO_NOT_DRIVE", "PARK_OUTSIDE",
 ]
+
+INV_COLUMNS = [
+    "NHTSA_ACTION_NUMBER", "MAKE", "MODEL", "YEAR", "COMPNAME",
+    "MFR_NAME", "ODATE", "CDATE", "CAMPNO", "SUBJECT", "SUMMARY",
+]
+
+INV_TYPE_LABELS = {
+    "PE": "Preliminary Evaluation",
+    "EA": "Engineering Analysis",
+    "RQ": "Recall Query",
+    "AQ": "Audit Query",
+    "EQ": "Equipment Query",
+    "DP": "Defect Petition",
+}
 
 STATE_FILE = "seen_items.json"
 TIMING_LOG = "nhtsa_timing_log.jsonl"
@@ -247,6 +262,112 @@ def check_nhtsa(state, now_utc, force=False):
 
 
 # ---------------------------------------------------------------------------
+# NHTSA investigations flat file
+# ---------------------------------------------------------------------------
+
+def check_investigations(state, now_utc, force=False):
+    seen_actions = set(state.get("seen_actions", []))
+    last_etag = state.get("inv_etag", "")
+
+    head = requests.head(NHTSA_INV_ZIP_URL, timeout=30)
+    current_etag = head.headers.get("etag", "")
+    last_modified = head.headers.get("last-modified", "")
+    print(f"  [INV] ETag      : {current_etag}")
+    print(f"  [INV] Last-Modified: {last_modified}")
+
+    etag_changed = current_etag != last_etag
+
+    if not etag_changed and not force:
+        print("  [INV] Flat file unchanged. Skipping download.")
+        append_log({
+            "event": "investigation_check",
+            "ts": now_utc,
+            "last_modified": last_modified,
+            "etag_changed": False,
+            "new_investigations_found": 0,
+        })
+        return [], seen_actions, current_etag
+
+    if force and not etag_changed:
+        print("  [INV] FORCE mode: downloading despite unchanged ETag.")
+
+    print("  [INV] Flat file updated — downloading...")
+    resp = requests.get(NHTSA_INV_ZIP_URL, timeout=180)
+    resp.raise_for_status()
+
+    z = zipfile.ZipFile(io.BytesIO(resp.content))
+    with z.open(z.namelist()[0]) as f:
+        df = pd.read_csv(
+            f, sep="\t", header=None, names=INV_COLUMNS,
+            encoding="utf-8", dtype=str, low_memory=False,
+            on_bad_lines="skip",
+        )
+
+    df["MAKE"] = df["MAKE"].str.upper().str.strip()
+    df = df[df["MAKE"].isin(MAJOR_MAKES)]
+
+    # Write CSV: one row per investigation (2020-present), newest first.
+    csv_df = df[df["ODATE"].fillna("") >= "20200101"].copy()
+    agg = csv_df.groupby("NHTSA_ACTION_NUMBER").agg(
+        MAKES=("MAKE", lambda x: ", ".join(sorted(set(x)))),
+        MODELS=("MODEL", lambda x: ", ".join(sorted(set(x.dropna())))),
+        YEARS=("YEAR", lambda x: ", ".join(sorted(set(x.dropna())))),
+        COMPNAME=("COMPNAME", "first"),
+        MFR_NAME=("MFR_NAME", "first"),
+        ODATE=("ODATE", "first"),
+        CDATE=("CDATE", "first"),
+        CAMPNO=("CAMPNO", "first"),
+        SUBJECT=("SUBJECT", "first"),
+    ).reset_index()
+    agg["NHTSA_URL"] = (
+        "https://www.nhtsa.gov/vehicle/investigations#?nhtsaId="
+        + agg["NHTSA_ACTION_NUMBER"]
+    )
+    agg = agg.sort_values("ODATE", ascending=False)
+    col_order = [
+        "NHTSA_ACTION_NUMBER", "NHTSA_URL", "MAKES", "MODELS", "YEARS",
+        "COMPNAME", "MFR_NAME", "ODATE", "CDATE", "CAMPNO", "SUBJECT",
+    ]
+    agg[col_order].to_csv("investigations_2020_present.csv", index=False)
+    print(f"  [INV] CSV written: {len(agg):,} investigations (2020-present, major OEMs)")
+
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+    df = df[df["ODATE"].fillna("") >= cutoff]
+    df = df.drop_duplicates(subset=["NHTSA_ACTION_NUMBER"])
+
+    if force:
+        new_investigations = df.to_dict("records")
+    else:
+        new_investigations = df[
+            ~df["NHTSA_ACTION_NUMBER"].isin(seen_actions)
+        ].to_dict("records")
+    seen_actions.update(df["NHTSA_ACTION_NUMBER"].tolist())
+
+    append_log({
+        "event": "investigation_check",
+        "ts": now_utc,
+        "last_modified": last_modified,
+        "etag_changed": True,
+        "new_investigations_found": len(new_investigations),
+    })
+
+    for r in new_investigations:
+        append_log({
+            "event": "investigation_detected",
+            "ts": now_utc,
+            "action_number": r.get("NHTSA_ACTION_NUMBER", ""),
+            "make": r.get("MAKE", ""),
+            "model": r.get("MODEL", ""),
+            "year": r.get("YEAR", ""),
+            "odate": str(r.get("ODATE", "")).strip(),
+            "detected_at": now_utc,
+            "flat_file_modified": last_modified,
+        })
+
+    return new_investigations, seen_actions, current_etag
+
+
+# ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
 
@@ -340,6 +461,73 @@ def send_email(html, count, force=False):
     print(f"Email sent to: {', '.join(recipients)}")
 
 
+def build_investigation_email(investigations, force=False):
+    rows = []
+    for r in investigations:
+        action = r.get("NHTSA_ACTION_NUMBER", "")
+        nhtsa_url = f"https://www.nhtsa.gov/vehicle/investigations#?nhtsaId={action}"
+        type_label = INV_TYPE_LABELS.get(action[:2].upper(), action[:2])
+        summary = (r.get("SUMMARY") or "")[:350]
+
+        rows.append(f"""
+<tr style="border-top:1px solid #ddd;vertical-align:top">
+  <td style="padding:8px 10px">
+    <b><a href="{nhtsa_url}">{action}</a></b> <small style="color:#666">({type_label})</small><br>
+    <b>{r.get('MAKE','')} {r.get('MODEL','')}</b> ({r.get('YEAR','')})<br>
+    <small style="color:#666">{r.get('COMPNAME','')}</small>
+  </td>
+  <td style="padding:8px 10px;white-space:nowrap">{fmt_date(r.get('ODATE',''))}</td>
+  <td style="padding:8px 10px;font-size:12px">
+    <b>{r.get('SUBJECT','')}</b><br><br>
+    {summary}
+  </td>
+</tr>""")
+
+    n = len(investigations)
+    banner = ""
+    if force:
+        banner = """<p style="background:#fff3cd;color:#856404;padding:8px 12px;border-radius:4px;margin:0 0 12px 0">
+&#9888; This is a manually triggered test run, not a live investigation alert.
+</p>"""
+    return f"""<html><body style="font-family:sans-serif;font-size:14px;max-width:960px;margin:0 auto">
+<h2 style="color:#2c3e8c;margin-bottom:4px">&#128269; NHTSA Investigation Alert &mdash; {n} new investigation{'s' if n != 1 else ''}</h2>
+<p style="color:#888;margin-top:0">{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
+{banner}
+<table border="0" cellpadding="0" cellspacing="0"
+  style="border-collapse:collapse;width:100%;border:1px solid #ddd;font-size:13px">
+  <tr style="background:#f2f2f2;font-size:11px;text-transform:uppercase">
+    <th style="padding:6px 10px;text-align:left;min-width:160px">Action #</th>
+    <th style="padding:6px 10px;text-align:left">Opened</th>
+    <th style="padding:6px 10px;text-align:left">Details</th>
+  </tr>
+  {''.join(rows)}
+</table>
+<p style="font-size:12px;color:#888;margin-top:24px">
+  <a href="https://github.com/grantschwab/recall-tool/blob/master/investigations_2020_present.csv">&#128202; Browse all investigations (2020–present)</a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <a href="https://raw.githubusercontent.com/grantschwab/recall-tool/master/investigations_2020_present.csv">&#11015; Download CSV</a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <a href="https://www.nhtsa.gov/nhtsa-datasets-and-apis">NHTSA Investigations Database</a>
+</p>
+</body></html>"""
+
+
+def send_investigation_email(html, count, force=False):
+    user = os.environ["GMAIL_USER"]
+    pwd = os.environ["GMAIL_APP_PASS"]
+    recipients = [e.strip() for e in os.environ["NOTIFY_EMAILS"].split(",")]
+    msg = MIMEMultipart("alternative")
+    prefix = "[TEST] " if force else ""
+    msg["Subject"] = f"{prefix}[Investigation Alert] {count} new NHTSA investigation{'s' if count != 1 else ''}"
+    msg["From"] = user
+    msg["To"] = ", ".join(recipients)
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(user, pwd)
+        s.sendmail(user, recipients, msg.as_string())
+    print(f"Investigation email sent to: {', '.join(recipients)}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -364,6 +552,21 @@ def main():
 
     state["nhtsa_etag"] = new_etag
     state["seen_campnos"] = sorted(seen_campnos)
+
+    print(f"[{now_utc[:19]}Z] Checking NHTSA investigations flat file...")
+    new_investigations, seen_actions, new_inv_etag = check_investigations(
+        state, now_utc, force=force
+    )
+    print(f"New NHTSA investigations: {len(new_investigations)}")
+
+    if new_investigations:
+        inv_html = build_investigation_email(new_investigations, force=force)
+        send_investigation_email(inv_html, len(new_investigations), force=force)
+    else:
+        print("Nothing to send.")
+
+    state["inv_etag"] = new_inv_etag
+    state["seen_actions"] = sorted(seen_actions)
     save_state(state)
 
     print_timing_summary()

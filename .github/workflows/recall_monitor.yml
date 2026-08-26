@@ -51,9 +51,9 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add recalls_2020_present.csv 2>/dev/null || true
-          git diff --staged --quiet && echo "CSV unchanged, nothing to commit." && exit 0
-          git commit -m "update: recalls CSV [skip ci]"
+          git add recalls_2020_present.csv investigations_2020_present.csv 2>/dev/null || true
+          git diff --staged --quiet && echo "CSVs unchanged, nothing to commit." && exit 0
+          git commit -m "update: recalls/investigations CSVs [skip ci]"
           for i in 1 2 3; do
             git fetch origin master
             git rebase origin/master && git push origin HEAD:master && exit 0
