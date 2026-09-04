@@ -1,4 +1,5 @@
 NHTSA_ACTION_NUMBER,NHTSA_URL,MAKES,MODELS,YEARS,COMPNAME,MFR_NAME,ODATE,CDATE,CAMPNO,SUBJECT
+AQ26002,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=AQ26002,TESLA,ROBOTAXI (CYBERCAB),2026,,"Tesla, Inc.",20260903,,,Tesla Cybercab FMVSS Certification
 DP26007,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=DP26007,FORD,MAVERICK HYBRID,2024,SERVICE BRAKES,Ford Motor Company,20260824,,,2024 Ford Maverick Hybrid Intermittent Loss of Braking
 EA26006,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=EA26006,"BUICK, CADILLAC, CHEVROLET, GMC","ACADIA, BLAZER, BLAZER EV, CANYON, COLORADO, ENCLAVE, ENVISION, EQUINOX EV, LYRIQ, OPTIQ, TRAVERSE, redundant LYRIQ","2023, 2024, 2025, 2026",SERVICE BRAKES,"General Motors, LLC",20260821,,,Electronic Brake Module Component Failure
 EA26005,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=EA26005,"CADILLAC, CHEVROLET, GMC","ESCALADE, ESCALADE ESV, SIERRA 1500, SILVERADO 1500, SUBURBAN, SUBURBAN 1500, TAHOE, YUKON, YUKON XL","2021, 2022, 2023, 2024, 2025, 2026",ENGINE,"General Motors, LLC",20260820,,,Loss of motive power due to engine failure post recall remedy
