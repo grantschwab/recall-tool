@@ -1,4 +1,5 @@
 NHTSA_ACTION_NUMBER,NHTSA_URL,MAKES,MODELS,YEARS,COMPNAME,MFR_NAME,ODATE,CDATE,CAMPNO,SUBJECT
+DP26009,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=DP26009,BMW,540I,2022,POWER TRAIN:DRIVELINE:DRIVESHAFT,"BMW of North America, LLC",20260914,,,Driveshaft to rear differential connection failure
 DP26008,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=DP26008,FORD,EDGE,"2015, 2016, 2017, 2018",ENGINE AND ENGINE COOLING,Ford Motor Company,20260903,,,Loss of Motive Power
 AQ26002,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=AQ26002,TESLA,ROBOTAXI (CYBERCAB),2026,,"Tesla, Inc.",20260903,,,Tesla Cybercab FMVSS Certification
 DP26007,https://www.nhtsa.gov/vehicle/investigations#?nhtsaId=DP26007,FORD,MAVERICK HYBRID,2024,SERVICE BRAKES,Ford Motor Company,20260824,,,2024 Ford Maverick Hybrid Intermittent Loss of Braking
