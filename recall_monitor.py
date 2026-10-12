@@ -153,7 +153,8 @@ Rules:
 - Lead with the most newsworthy fact. Spell out what the vehicles, component and problem are, then who is affected and what the remedy or next step is.
 - If the record is silent on something a reader would want (e.g. injuries, crashes, repair timeline), say it was not specified in NHTSA's filing rather than guessing.
 - Dates in the record are YYYYMMDD. Write them as normal dates.
-- Neutral, AP-style tone.
+- Tone: dry and informative. No editorializing: no adjectives or adverbs that characterize the severity, danger, or significance of the problem (e.g. \"alarming\", \"serious\", \"troubling\", \"notably\"), no speculation about causes or motives, no commentary on the manufacturer, and no calls to action beyond what the record itself states as the remedy.
+- State what the record says and attribute it to NHTSA or the manufacturer's filing.
 
 RECORD:
 {record}
