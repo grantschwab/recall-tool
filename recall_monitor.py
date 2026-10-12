@@ -625,10 +625,19 @@ def build_email(recalls, force=False):
 </body></html>"""
 
 
+def get_recipients(force):
+    """Test (force) runs go only to TEST_NOTIFY_EMAILS, never the team list."""
+    var = "TEST_NOTIFY_EMAILS" if force else "NOTIFY_EMAILS"
+    return [e.strip() for e in os.environ.get(var, "").split(",") if e.strip()]
+
+
 def send_email(html, count, force=False):
     user = os.environ["GMAIL_USER"]
     pwd = os.environ["GMAIL_APP_PASS"]
-    recipients = [e.strip() for e in os.environ["NOTIFY_EMAILS"].split(",")]
+    recipients = get_recipients(force)
+    if not recipients:
+        print("Test run but TEST_NOTIFY_EMAILS is not set; not sending to the team list.")
+        return
     msg = MIMEMultipart("alternative")
     prefix = "[TEST] " if force else ""
     msg["Subject"] = f"{prefix}[Recall Alert] {count} new NHTSA filing{'s' if count != 1 else ''}"
@@ -696,7 +705,10 @@ def build_investigation_email(investigations, force=False):
 def send_investigation_email(html, count, force=False):
     user = os.environ["GMAIL_USER"]
     pwd = os.environ["GMAIL_APP_PASS"]
-    recipients = [e.strip() for e in os.environ["NOTIFY_EMAILS"].split(",")]
+    recipients = get_recipients(force)
+    if not recipients:
+        print("Test run but TEST_NOTIFY_EMAILS is not set; not sending to the team list.")
+        return
     msg = MIMEMultipart("alternative")
     prefix = "[TEST] " if force else ""
     msg["Subject"] = f"{prefix}[Investigation Alert] {count} new NHTSA investigation{'s' if count != 1 else ''}"

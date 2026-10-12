@@ -65,6 +65,7 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           NOTIFY_EMAILS: ${{ secrets.NOTIFY_EMAILS }}
+          TEST_NOTIFY_EMAILS: ${{ secrets.TEST_NOTIFY_EMAILS }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FORCE_EMAIL: ${{ github.event.inputs.force }}
