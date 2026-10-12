@@ -183,7 +183,8 @@ def generate_story_cli(prompt):
             input=prompt, capture_output=True, text=True, timeout=300,
         )
         if out.returncode != 0:
-            print(f"  Claude CLI failed: {out.stderr.strip()[:300]}")
+            print(f"  Claude CLI failed (exit {out.returncode}): "
+                  f"stderr={out.stderr.strip()[:300]!r} stdout={out.stdout.strip()[:300]!r}")
             return ""
         return out.stdout.strip()
     except Exception as e:
