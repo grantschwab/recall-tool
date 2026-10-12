@@ -2,6 +2,7 @@ import os
 import json
 import io
 import zipfile
+import subprocess
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -51,6 +52,10 @@ INV_TYPE_LABELS = {
 }
 
 STATE_FILE = "seen_items.json"
+STORIES_FILE = "stories.json"
+STORY_COL = "AI GEN STORY"
+STORY_MODEL = "claude-sonnet-5-5"
+MAX_STORIES_PER_RUN = 25
 TIMING_LOG = "nhtsa_timing_log.jsonl"
 
 
@@ -135,6 +140,163 @@ def print_timing_summary():
     print("--- End Summary ---\n")
 
 
+
+# ---------------------------------------------------------------------------
+# AI-generated story drafts
+# ---------------------------------------------------------------------------
+
+STORY_PROMPT = """You are a reporter at The Detroit News drafting a short news story from a new NHTSA {kind} record.
+
+Write exactly 4 paragraphs of plain prose (no headline, no bullets, no markdown), separated by blank lines.
+Rules:
+- Use ONLY facts in the record below. Do not invent numbers, quotes, dates, causes, injuries, or company statements.
+- Lead with the most newsworthy fact. Spell out what the vehicles, component and problem are, then who is affected and what the remedy or next step is.
+- If the record is silent on something a reader would want (e.g. injuries, crashes, repair timeline), say it was not specified in NHTSA's filing rather than guessing.
+- Dates in the record are YYYYMMDD. Write them as normal dates.
+- Neutral, AP-style tone.
+
+RECORD:
+{record}
+"""
+
+
+def load_stories():
+    try:
+        with open(STORIES_FILE) as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_stories(stories):
+    with open(STORIES_FILE, "w") as f:
+        json.dump(stories, f, indent=2, sort_keys=True)
+
+
+def generate_story_cli(prompt):
+    """Use the Claude Code CLI, billed to the subscription behind CLAUDE_CODE_OAUTH_TOKEN."""
+    try:
+        out = subprocess.run(
+            ["claude", "-p", "--model", STORY_MODEL],
+            input=prompt, capture_output=True, text=True, timeout=300,
+        )
+        if out.returncode != 0:
+            print(f"  Claude CLI failed: {out.stderr.strip()[:300]}")
+            return ""
+        return out.stdout.strip()
+    except Exception as e:
+        print(f"  Claude CLI failed: {e}")
+        return ""
+
+
+def generate_story(kind, record_text):
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return generate_story_cli(STORY_PROMPT.format(kind=kind, record=record_text))
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        print("  No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY set — skipping story generation.")
+        return ""
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": STORY_MODEL,
+                "max_tokens": 1200,
+                "messages": [{
+                    "role": "user",
+                    "content": STORY_PROMPT.format(kind=kind, record=record_text),
+                }],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return "".join(
+            b.get("text", "") for b in resp.json().get("content", [])
+        ).strip()
+    except Exception as e:
+        print(f"  Story generation failed: {e}")
+        return ""
+
+
+def recall_record_text(r):
+    fields = [
+        ("Campaign", r.get("CAMPNO")), ("Make", r.get("MAKETXT")),
+        ("Models", r.get("ALL_MODELS") or r.get("MODELTXT")),
+        ("Model years", r.get("ALL_YEARS") or r.get("YEARTXT")),
+        ("Component", r.get("COMPNAME")), ("Manufacturer", r.get("MFGNAME")),
+        ("Report received date", r.get("RCDATE")),
+        ("Potentially affected vehicles", r.get("POTAFF")),
+        ("Do not drive", r.get("DO_NOT_DRIVE")),
+        ("Park outside", r.get("PARK_OUTSIDE")),
+        ("Defect description", r.get("DESC_DEFECT")),
+        ("Consequence", r.get("CONEQUENCE_DEFECT")),
+        ("Corrective action", r.get("CORRECTIVE_ACTION")),
+        ("Notes", r.get("NOTES")),
+    ]
+    return "\n".join(f"{k}: {v}" for k, v in fields if isinstance(v, str) and v.strip())
+
+
+def investigation_record_text(r):
+    action = str(r.get("NHTSA_ACTION_NUMBER", ""))
+    fields = [
+        ("Action number", action),
+        ("Investigation type", INV_TYPE_LABELS.get(action[:2].upper(), action[:2])),
+        ("Make", r.get("MAKE")),
+        ("Models", r.get("ALL_MODELS") or r.get("MODEL")),
+        ("Model years", r.get("ALL_YEARS") or r.get("YEAR")),
+        ("Component", r.get("COMPNAME")), ("Manufacturer", r.get("MFR_NAME")),
+        ("Open date", r.get("ODATE")), ("Close date", r.get("CDATE")),
+        ("Related recall campaign", r.get("CAMPNO")),
+        ("Subject", r.get("SUBJECT")), ("Summary", r.get("SUMMARY")),
+    ]
+    return "\n".join(f"{k}: {v}" for k, v in fields if isinstance(v, str) and v.strip())
+
+
+def add_stories(items, id_key, kind, text_fn, stories):
+    """Generate a story for each new item and store it on the item and in stories.json."""
+    made = 0
+    for r in items:
+        item_id = r.get(id_key, "")
+        if item_id in stories and stories[item_id]:
+            r["STORY"] = stories[item_id]
+            continue
+        if made >= MAX_STORIES_PER_RUN:
+            print(f"  Story cap ({MAX_STORIES_PER_RUN}) reached; remaining items get no draft.")
+            break
+        story = generate_story(kind, text_fn(r))
+        if story:
+            stories[item_id] = story
+            r["STORY"] = story
+            made += 1
+    return made
+
+
+def apply_stories(csv_path, id_col, stories):
+    """Add/refresh the AI GEN STORY column on a CSV from the stories store."""
+    try:
+        df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    except FileNotFoundError:
+        return
+    df[STORY_COL] = df[id_col].map(stories).fillna("")
+    df.to_csv(csv_path, index=False)
+
+
+def story_html(r):
+    story = r.get("STORY")
+    if not story:
+        return ""
+    paras = "".join(f"<p style='margin:0 0 8px 0'>{p}</p>" for p in story.split("\n\n"))
+    return (
+        "<br><div style='background:#f7f7f7;border-left:3px solid #999;padding:8px 10px;margin-top:6px'>"
+        "<b>AI-generated draft (verify before use)</b>" + paras + "</div>"
+    )
+
 # ---------------------------------------------------------------------------
 # NHTSA flat file
 # ---------------------------------------------------------------------------
@@ -210,6 +372,8 @@ def check_nhtsa(state, now_utc, force=False):
     # "new" detection on a rolling window would let those slip through
     # unnoticed forever. seen_campnos alone is what prevents re-notification.
     df = df[df["RCDATE"].fillna("") >= "20200101"]
+    all_models = df.groupby("CAMPNO")["MODELTXT"].agg(lambda x: ", ".join(sorted(set(x.dropna())))).to_dict()
+    all_years = df.groupby("CAMPNO")["YEARTXT"].agg(lambda x: ", ".join(sorted(set(x.dropna())))).to_dict()
     df = df.drop_duplicates(subset=["CAMPNO"])
 
     if force:
@@ -219,6 +383,9 @@ def check_nhtsa(state, now_utc, force=False):
         new_recalls = df.sort_values("RCDATE", ascending=False).head(5).to_dict("records")
     else:
         new_recalls = df[~df["CAMPNO"].isin(seen_campnos)].to_dict("records")
+    for r in new_recalls:
+        r["ALL_MODELS"] = all_models.get(r["CAMPNO"], "")
+        r["ALL_YEARS"] = all_years.get(r["CAMPNO"], "")
     seen_campnos.update(df["CAMPNO"].tolist())
 
     # Log this file update
@@ -336,6 +503,8 @@ def check_investigations(state, now_utc, force=False):
     # permanently drop investigations that miss it. seen_actions alone
     # prevents re-notification.
     df = df[df["ODATE"].fillna("") >= "20200101"]
+    all_models = df.groupby("NHTSA_ACTION_NUMBER")["MODEL"].agg(lambda x: ", ".join(sorted(set(x.dropna())))).to_dict()
+    all_years = df.groupby("NHTSA_ACTION_NUMBER")["YEAR"].agg(lambda x: ", ".join(sorted(set(x.dropna())))).to_dict()
     df = df.drop_duplicates(subset=["NHTSA_ACTION_NUMBER"])
 
     if force:
@@ -346,6 +515,9 @@ def check_investigations(state, now_utc, force=False):
         new_investigations = df[
             ~df["NHTSA_ACTION_NUMBER"].isin(seen_actions)
         ].to_dict("records")
+    for r in new_investigations:
+        r["ALL_MODELS"] = all_models.get(r["NHTSA_ACTION_NUMBER"], "")
+        r["ALL_YEARS"] = all_years.get(r["NHTSA_ACTION_NUMBER"], "")
     seen_actions.update(df["NHTSA_ACTION_NUMBER"].tolist())
 
     append_log({
@@ -417,6 +589,7 @@ def build_email(recalls, force=False):
   <td style="padding:8px 10px;font-size:12px">
     <b>Defect:</b> {defect}<br><br>
     <b>Consequence:</b> {consequence}
+    {story_html(r)}
   </td>
 </tr>""")
 
@@ -485,6 +658,7 @@ def build_investigation_email(investigations, force=False):
   <td style="padding:8px 10px;font-size:12px">
     <b>{r.get('SUBJECT','')}</b><br><br>
     {summary}
+    {story_html(r)}
   </td>
 </tr>""")
 
@@ -549,7 +723,9 @@ def main():
     new_recalls, seen_campnos, new_etag = check_nhtsa(state, now_utc, force=force)
     print(f"New NHTSA filings: {len(new_recalls)}")
 
+    stories = load_stories()
     if new_recalls:
+        add_stories(new_recalls, "CAMPNO", "vehicle recall", recall_record_text, stories)
         html = build_email(new_recalls, force=force)
         send_email(html, len(new_recalls), force=force)
     else:
@@ -565,6 +741,8 @@ def main():
     print(f"New NHTSA investigations: {len(new_investigations)}")
 
     if new_investigations:
+        add_stories(new_investigations, "NHTSA_ACTION_NUMBER", "defect investigation",
+                    investigation_record_text, stories)
         inv_html = build_investigation_email(new_investigations, force=force)
         send_investigation_email(inv_html, len(new_investigations), force=force)
     else:
@@ -573,6 +751,10 @@ def main():
     state["inv_etag"] = new_inv_etag
     state["seen_actions"] = sorted(seen_actions)
     save_state(state)
+
+    save_stories(stories)
+    apply_stories("recalls_2020_present.csv", "CAMPNO", stories)
+    apply_stories("investigations_2020_present.csv", "NHTSA_ACTION_NUMBER", stories)
 
     print_timing_summary()
 

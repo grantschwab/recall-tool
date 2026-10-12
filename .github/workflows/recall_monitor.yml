@@ -2,7 +2,10 @@ name: Recall Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Targets 6AM, 9AM, noon, 3PM, 6PM Eastern. GitHub cron is UTC-only, so both
+    # the EDT (UTC-4) and EST (UTC-5) hours are listed; the gate step below
+    # skips whichever set doesn't match the current Eastern hour.
+    - cron: "3 10,11,13,14,16,17,19,20,22,23 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -21,9 +24,22 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Eastern-time gate
+        id: gate
+        run: |
+          H=$(TZ=America/New_York date +%H)
+          if [ "${{ github.event_name }}" != "schedule" ] || [[ " 06 09 12 15 18 " == *" $H "* ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Eastern hour $H is not a scheduled check time; skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
 
       - name: Restore state
+        if: steps.gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -32,26 +48,34 @@ jobs:
           key: recall-state-${{ github.run_id }}
           restore-keys: recall-state-
 
-      - uses: actions/setup-python@v5
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests pandas
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          pip install requests pandas
+          npm install -g @anthropic-ai/claude-code
 
       - name: Check NHTSA
+        if: steps.gate.outputs.run == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
           NOTIFY_EMAILS: ${{ secrets.NOTIFY_EMAILS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FORCE_EMAIL: ${{ github.event.inputs.force }}
         run: python recall_monitor.py
 
       - name: Commit CSV if updated
+        if: steps.gate.outputs.run == 'true'
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add recalls_2020_present.csv investigations_2020_present.csv 2>/dev/null || true
+          git add recalls_2020_present.csv investigations_2020_present.csv stories.json 2>/dev/null || true
           git diff --staged --quiet && echo "CSVs unchanged, nothing to commit." && exit 0
           git commit -m "update: recalls/investigations CSVs [skip ci]"
           for i in 1 2 3; do
