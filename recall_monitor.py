@@ -178,9 +178,12 @@ def save_stories(stories):
 def generate_story_cli(prompt):
     """Use the Claude Code CLI, billed to the subscription behind CLAUDE_CODE_OAUTH_TOKEN."""
     try:
+        # A token copied from a wrapped terminal can contain line breaks.
+        env = dict(os.environ)
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = "".join(env["CLAUDE_CODE_OAUTH_TOKEN"].split())
         out = subprocess.run(
             ["claude", "-p", "--model", STORY_MODEL],
-            input=prompt, capture_output=True, text=True, timeout=300,
+            input=prompt, capture_output=True, text=True, timeout=300, env=env,
         )
         if out.returncode != 0:
             print(f"  Claude CLI failed (exit {out.returncode}): "
