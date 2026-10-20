@@ -5,7 +5,8 @@ on:
     # Targets 6AM, 9AM, noon, 3PM, 6PM Eastern. GitHub cron is UTC-only, so both
     # the EDT (UTC-4) and EST (UTC-5) hours are listed; the gate step below
     # skips whichever set doesn't match the current Eastern hour.
-    - cron: "3 10,11,13,14,16,17,19,20,22,23 * * *"
+    # :03 and :33 so that if GitHub drops one trigger the other still covers the slot.
+    - cron: "3,33 10,11,13,14,16,17,19,20,22,23 * * *"
   workflow_dispatch:
     inputs:
       force:
