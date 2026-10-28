@@ -3,6 +3,7 @@ import json
 import io
 import zipfile
 import subprocess
+import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -56,6 +57,10 @@ STORIES_FILE = "stories.json"
 STORY_COL = "AI GEN STORY"
 STORY_MODEL = "claude-sonnet-5-5"
 MAX_STORIES_PER_RUN = 25
+STORY_BUDGET_SECONDS = 600
+# More new items than this in one run means the "seen" state was almost
+# certainly lost (cache miss), not that NHTSA filed this many at once.
+BULK_THRESHOLD = 50
 TIMING_LOG = "nhtsa_timing_log.jsonl"
 
 
@@ -70,6 +75,41 @@ def load_state():
             return data if isinstance(data, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def seed_state_from_csvs(state):
+    """If the cached state came back empty (cache miss), rebuild the seen sets
+    from the committed CSVs so we don't re-announce everything as new."""
+    for key, path, col in (
+        ("seen_campnos", "recalls_2020_present.csv", "CAMPNO"),
+        ("seen_actions", "investigations_2020_present.csv", "NHTSA_ACTION_NUMBER"),
+    ):
+        if state.get(key):
+            continue
+        try:
+            ids = pd.read_csv(path, dtype=str, usecols=[col])[col].dropna().tolist()
+        except Exception as e:
+            print(f"  Could not seed {key} from {path}: {e}")
+            continue
+        if ids:
+            state[key] = sorted(set(ids))
+            print(f"  State for {key} was empty; seeded {len(ids):,} ids from {path}.")
+    return state
+
+
+def send_admin_warning(subject, body):
+    admin = [e.strip() for e in os.environ.get("TEST_NOTIFY_EMAILS", "").split(",") if e.strip()]
+    if not admin:
+        print(f"WARNING (no admin address set): {subject}")
+        return
+    user = os.environ["GMAIL_USER"]
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = ", ".join(admin)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(user, os.environ["GMAIL_APP_PASS"])
+        s.sendmail(user, admin, msg.as_string())
 
 
 def save_state(state):
@@ -183,7 +223,7 @@ def generate_story_cli(prompt):
         env["CLAUDE_CODE_OAUTH_TOKEN"] = "".join(env["CLAUDE_CODE_OAUTH_TOKEN"].split())
         out = subprocess.run(
             ["claude", "-p", "--model", STORY_MODEL],
-            input=prompt, capture_output=True, text=True, timeout=300, env=env,
+            input=prompt, capture_output=True, text=True, timeout=120, env=env,
         )
         if out.returncode != 0:
             print(f"  Claude CLI failed (exit {out.returncode}): "
@@ -266,11 +306,15 @@ def investigation_record_text(r):
 def add_stories(items, id_key, kind, text_fn, stories):
     """Generate a story for each new item and store it on the item and in stories.json."""
     made = 0
+    deadline = time.monotonic() + STORY_BUDGET_SECONDS
     for r in items:
         item_id = r.get(id_key, "")
         if item_id in stories and stories[item_id]:
             r["STORY"] = stories[item_id]
             continue
+        if time.monotonic() > deadline:
+            print("  Story time budget used up; remaining items get no draft.")
+            break
         if made >= MAX_STORIES_PER_RUN:
             print(f"  Story cap ({MAX_STORIES_PER_RUN}) reached; remaining items get no draft.")
             break
@@ -730,7 +774,7 @@ def send_investigation_email(html, count, force=False):
 
 def main():
     now_utc = datetime.now(timezone.utc).isoformat()
-    state = load_state()
+    state = seed_state_from_csvs(load_state())
 
     force = os.environ.get("FORCE_EMAIL", "").lower() == "true"
     if force:
@@ -741,6 +785,12 @@ def main():
     print(f"New NHTSA filings: {len(new_recalls)}")
 
     stories = load_stories()
+    if len(new_recalls) > BULK_THRESHOLD and not force:
+        msg = (f"{len(new_recalls):,} recalls looked new in one run, which usually means the "
+               "monitor lost its seen-state. No alert sent; all marked as seen.")
+        print("WARNING: " + msg)
+        send_admin_warning("[Recall Monitor] Bulk 'new' recalls suppressed", msg)
+        new_recalls = []
     if new_recalls:
         add_stories(new_recalls, "CAMPNO", "vehicle recall", recall_record_text, stories)
         html = build_email(new_recalls, force=force)
@@ -757,6 +807,12 @@ def main():
     )
     print(f"New NHTSA investigations: {len(new_investigations)}")
 
+    if len(new_investigations) > BULK_THRESHOLD and not force:
+        msg = (f"{len(new_investigations):,} investigations looked new in one run, which usually "
+               "means the monitor lost its seen-state. No alert sent; all marked as seen.")
+        print("WARNING: " + msg)
+        send_admin_warning("[Recall Monitor] Bulk 'new' investigations suppressed", msg)
+        new_investigations = []
     if new_investigations:
         add_stories(new_investigations, "NHTSA_ACTION_NUMBER", "defect investigation",
                     investigation_record_text, stories)
